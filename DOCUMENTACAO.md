@@ -81,8 +81,9 @@ automaticamente. Para sair do Tinker, use `exit`.
    referencia o centro de origem, o cliente pelo CPF cadastrado em `users` e,
    opcionalmente, um entregador disponível.
 5. Os formulários de cliente, centro e pacote consultam automaticamente o CEP
-   informado nas APIs ViaCEP e BrasilAPI. Após localizar o CEP, o endereço base
-   é preenchido; confira e complete número e complemento antes de salvar.
+   informado pela API interna, que tenta ViaCEP, BrasilAPI e AwesomeAPI. Após
+   localizar o CEP, o endereço base é preenchido; confira e complete número e
+   complemento antes de salvar.
 6. Ao cadastrar um pacote, o endereço de entrega é geocodificado. As
    coordenadas são salvas e o pacote pode aparecer no mapa. O endereço é
    enviado ao serviço externo Nominatim; geocodificações ficam em cache por
@@ -98,14 +99,20 @@ O mapa usa OpenStreetMap, Nominatim e OSRM públicos, que não oferecem SLA e
 podem limitar ou indisponibilizar consultas. A duração da rota é estimada e não
 considera trânsito. As URLs podem ser substituídas por configuração de
 ambiente; `MAPS_CONTACT_EMAIL` adiciona um contato ao User-Agent do Nominatim.
-O CEP digitado é consultado automaticamente nas APIs ViaCEP e BrasilAPI após a
-entrada dos oito dígitos; também é possível iniciar a consulta pelo botão do
-formulário. A busca tem limite de oito segundos por serviço. Após localizar o
-CEP, o endereço base é preenchido automaticamente. Confira e complete número e
-complemento antes de salvar. Erros de validação, API e conexão aparecem em um
-popup global e junto ao formulário quando aplicável. CEP inválido ou não
-encontrado em nenhuma base impede o envio do cadastro. O popup fecha sozinho
-após alguns segundos ou pelo botão de fechar.
+O CEP digitado é consultado automaticamente pela API interna após a entrada dos
+oito dígitos; também é possível iniciar a consulta pelo botão do formulário. A
+API consulta os provedores nacionais ViaCEP, BrasilAPI e AwesomeAPI em sequência
+até localizar o CEP. O limite é de quatro segundos por provedor. Após localizar
+o CEP, o endereço base é preenchido automaticamente. Confira e complete número
+e complemento antes de salvar. Erros de validação, API e conexão aparecem em um
+popup global e junto ao formulário quando aplicável. CEP não encontrado retorna
+`404`; se todos os provedores estiverem indisponíveis, retorna `503`. O popup
+fecha sozinho após alguns segundos ou pelo botão de fechar.
+
+A consulta é por CEP individual e cobre endereços de todo o Brasil; ela não
+baixa uma lista completa de CEPs. A rota autenticada `GET /api/cep/{cep}` aceita
+oito dígitos, com ou sem hífen. Exemplo: `GET /api/cep/01001-000`. A resposta
+inclui `cep`, `logradouro`, `bairro`, `localidade`, `uf` e `endereco`.
 
 ## Convenções da API
 
@@ -131,6 +138,7 @@ após alguns segundos ou pelo botão de fechar.
 | `POST` | `/api/logout` | Sim | Revoga o token Sanctum usado na chamada. |
 | `GET` | `/api/user` | Sim | Retorna o usuário associado ao token atual. |
 | `GET` | `/api/dashboard` | Sim | Retorna métricas, distribuição por situação, seis entregas recentes e pacotes geolocalizados. |
+| `GET` | `/api/cep/{cep}` | Sim | Consulta CEPs de todo o Brasil via ViaCEP, BrasilAPI e AwesomeAPI, retornando endereço padronizado. Limitada a 60 consultas por minuto. |
 
 O JSON do login tem o formato:
 

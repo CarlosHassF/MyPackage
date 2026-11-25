@@ -87,48 +87,7 @@ function ErrorPopup({ message, onClose }) {
     );
 }
 
-async function fetchCepData(url) {
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 8000);
-
-    try {
-        const response = await fetch(url, {
-            headers: { Accept: 'application/json' },
-            signal: controller.signal,
-        });
-
-        if (response.status === 404) {
-            return null;
-        }
-
-        if (!response.ok) {
-            throw new Error('O serviço de consulta de CEP está indisponível.');
-        }
-
-        return await response.json();
-    } finally {
-        window.clearTimeout(timeoutId);
-    }
-}
-
-function getCepAddress(result, provider) {
-    if (!result || result.erro) {
-        return '';
-    }
-
-    const street = provider === 'viacep' ? result.logradouro : result.street;
-    const neighborhood = provider === 'viacep' ? result.bairro : result.neighborhood;
-    const city = provider === 'viacep' ? result.localidade : result.city;
-    const state = provider === 'viacep' ? result.uf : result.state;
-
-    return [
-        street,
-        neighborhood,
-        [city, state].filter(Boolean).join(' - '),
-    ].filter(Boolean).join(', ');
-}
-
-function useCepLookup(onAddressChange, onError) {
+function useCepLookup(onAddressChange, onError, token, onUnauthorized) {
     const [cep, setCep] = useState('');
     const [cepError, setCepError] = useState('');
     const [lookingUpCep, setLookingUpCep] = useState(false);
@@ -174,21 +133,28 @@ function useCepLookup(onAddressChange, onError) {
 
         const lookupPromise = (async () => {
             try {
-                const results = await Promise.allSettled([
-                    fetchCepData(`https://viacep.com.br/ws/${digits}/json/`)
-                        .then((result) => getCepAddress(result, 'viacep')),
-                    fetchCepData(`https://brasilapi.com.br/api/cep/v1/${digits}`)
-                        .then((result) => getCepAddress(result, 'brasilapi')),
-                ]);
-                const address = results.find(
-                    (result) => result.status === 'fulfilled' && result.value,
-                )?.value ?? '';
+                const response = await fetch(`${API_URL}/api/cep/${digits}`, {
+                    headers: {
+                        Accept: 'application/json',
+                        Authorization: 'Bearer ' + token,
+                    },
+                });
+                const result = await response.json();
+
+                if (response.status === 401) {
+                    onUnauthorized();
+
+                    return false;
+                }
+
+                if (!response.ok) {
+                    throw new Error(result.message || 'Não foi possível consultar o CEP.');
+                }
+
+                const address = result.endereco;
 
                 if (!address) {
-                    const hasProviderResponse = results.some((result) => result.status === 'fulfilled');
-                    throw new Error(hasProviderResponse
-                        ? 'CEP não encontrado nas bases consultadas. Confira os números informados.'
-                        : 'Os serviços de CEP estão indisponíveis. Tente novamente em instantes.');
+                    throw new Error('O serviço de CEP retornou um endereço inválido.');
                 }
 
                 if (requestId.current === currentRequestId) {
@@ -223,7 +189,7 @@ function useCepLookup(onAddressChange, onError) {
         activeLookup.current = { cep: digits, promise: lookupPromise, requestId: currentRequestId };
 
         return lookupPromise;
-    }, [cep, onAddressChange, onError]);
+    }, [cep, onAddressChange, onError, onUnauthorized, token]);
 
     useEffect(() => {
         if (!/^\d{8}$/.test(cep.replace(/\D/g, '')) || validatedCep.current === cep) {
@@ -370,12 +336,12 @@ const navigationMenus = {
             { label: 'Cadastrar centro', description: 'Adicionar um centro logístico', icon: 'plus', modal: 'center-create' },
         ],
     },
-    admins: {
-        label: 'Administradores',
+    clients: {
+        label: 'Clientes',
         icon: 'user',
         actions: [
-            { label: 'Listar administradores', description: 'Consultar administradores cadastrados', icon: 'users', modal: 'admin-list' },
-            { label: 'Cadastrar administrador', description: 'Dar acesso ao sistema a outra pessoa', icon: 'plus', modal: 'admin-create' },
+            { label: 'Listar clientes', description: 'Consultar clientes cadastrados', icon: 'users', modal: 'client-list' },
+            { label: 'Cadastrar cliente', description: 'Adicionar um novo cliente', icon: 'plus', modal: 'client-create' },
         ],
     },
     couriers: {
@@ -734,7 +700,7 @@ function Modal({ title, description, onClose, children, size = 'normal' }) {
 function getApiError(result, fallback) {
     const knownMessages = {
         'validation.required': 'Este campo é obrigatório.',
-        'validation.exists': 'O registro informado não foi encontrado. Confira o centro ou entregador selecionado.',
+        'validation.exists': 'O registro informado não foi encontrado. Confira o CPF, centro ou entregador selecionado.',
         'validation.unique': 'Este valor já está cadastrado.',
         'validation.email': 'Informe um endereço de e-mail válido.',
         'validation.digits': 'Informe a quantidade de dígitos exigida.',
@@ -750,8 +716,10 @@ function getApiError(result, fallback) {
         name: 'Nome',
         email: 'E-mail',
         password: 'Senha',
-        cpf_destinatario: 'CPF do destinatário',
-        telefone_destinatario: 'Telefone do destinatário',
+        endereco: 'Endereço',
+        telefone: 'Telefone',
+        cpf: 'CPF',
+        cpf_cliente: 'CPF do cliente',
         endereco_entrega: 'Endereço de entrega',
         endereco_centro: 'Endereço do centro',
         id_origem: 'Centro logístico',
@@ -779,12 +747,13 @@ function getApiError(result, fallback) {
 const directoryDefinitions = {
     packages: {
         title: 'Pacotes',
-        description: 'Consulte rastreamento, origem e situação das entregas.',
+        description: 'Consulte rastreamento, cliente, origem e situação das entregas.',
         endpoint: 'pacotes',
         emptyMessage: 'Cadastre um pacote para vê-lo nesta lista.',
         columns: [
             { label: 'Rastreamento', render: (item) => <span className="tracking-cell">{item.cod_rastreio}</span> },
             { label: 'Destinatário', render: (item) => item.nome_destinatario },
+            { label: 'Cliente', render: (item) => item.cliente?.name ?? item.cpf_cliente },
             { label: 'Origem', render: (item) => item.origem?.nome_centro ?? '—' },
             {
                 label: 'Situação',
@@ -812,14 +781,16 @@ const directoryDefinitions = {
             { label: 'Entregadores informados', render: (item) => item.num_entregadores },
         ],
     },
-    admins: {
-        title: 'Administradores',
-        description: 'Consulte as pessoas que têm acesso de administrador ao sistema.',
+    clients: {
+        title: 'Clientes',
+        description: 'Consulte os clientes cadastrados para associar aos pacotes pelo CPF.',
         endpoint: 'usuarios',
-        emptyMessage: 'Cadastre um administrador para vê-lo nesta lista.',
+        emptyMessage: 'Cadastre um cliente para vê-lo nesta lista.',
         columns: [
-            { label: 'Nome', render: (item) => item.name },
+            { label: 'Cliente', render: (item) => item.name },
             { label: 'E-mail', render: (item) => item.email },
+            { label: 'CPF', render: (item) => item.cpf },
+            { label: 'Telefone', render: (item) => item.telefone },
         ],
     },
 };
@@ -894,7 +865,7 @@ function DirectoryList({ type, token, onClose, onUnauthorized }) {
                     </>
                 ) : !error ? (
                     <div className="empty-state">
-                        <span className="empty-icon"><Icon name={type === 'admins' ? 'user' : type === 'centers' ? 'building' : 'package'} size={22} /></span>
+                        <span className="empty-icon"><Icon name={type === 'clients' ? 'user' : type === 'centers' ? 'building' : 'package'} size={22} /></span>
                         <strong>Nenhum registro cadastrado</strong>
                         <span>{definition.emptyMessage}</span>
                     </div>
@@ -904,21 +875,36 @@ function DirectoryList({ type, token, onClose, onUnauthorized }) {
     );
 }
 
-function AdminForm({ token, onClose, onSaved, onUnauthorized }) {
-    const [form, setForm] = useState({ name: '', email: '', password: '' });
+function ClientForm({ token, onClose, onSaved, onUnauthorized }) {
+    const [form, setForm] = useState({
+        name: '',
+        email: '',
+        password: '',
+        endereco: '',
+        telefone: '',
+        cpf: '',
+    });
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState('');
+    const setClientAddress = useCallback((endereco) => {
+        setForm((current) => ({ ...current, endereco }));
+    }, []);
+    const notifyError = useCallback((message) => reportError(setError, message), []);
+    const cepLookup = useCepLookup(setClientAddress, notifyError, token, onUnauthorized);
 
     function updateField(event) {
         setForm((current) => ({ ...current, [event.target.name]: event.target.value }));
     }
 
-    async function createAdmin(event) {
+    async function createClient(event) {
         event.preventDefault();
         setSaving(true);
         setError('');
 
         try {
+            const cepAddress = await cepLookup.lookupCep();
+            if (!cepAddress) return;
+
             const response = await fetch(`${API_URL}/api/usuarios`, {
                 method: 'POST',
                 headers: {
@@ -926,7 +912,7 @@ function AdminForm({ token, onClose, onSaved, onUnauthorized }) {
                     'Content-Type': 'application/json',
                     Authorization: 'Bearer ' + token,
                 },
-                body: JSON.stringify(form),
+                body: JSON.stringify({ ...form, endereco: form.endereco || cepAddress }),
             });
             const result = await response.json();
 
@@ -934,12 +920,12 @@ function AdminForm({ token, onClose, onSaved, onUnauthorized }) {
                 onUnauthorized();
                 return;
             }
-            if (!response.ok) throw new Error(getApiError(result, 'Não foi possível cadastrar o administrador.'));
+            if (!response.ok) throw new Error(getApiError(result, 'Não foi possível cadastrar o cliente.'));
 
-            onSaved('Administrador cadastrado com sucesso.');
+            onSaved('Cliente cadastrado com sucesso.');
             onClose();
         } catch (requestError) {
-            reportError(setError, getRequestErrorMessage(requestError, 'Falha ao cadastrar o administrador.'));
+            reportError(setError, getRequestErrorMessage(requestError, 'Falha ao cadastrar o cliente.'));
         } finally {
             setSaving(false);
         }
@@ -947,32 +933,53 @@ function AdminForm({ token, onClose, onSaved, onUnauthorized }) {
 
     return (
         <Modal
-            title="Cadastrar administrador"
-            description="A pessoa poderá entrar no sistema com o e-mail e a senha informados."
+            title="Cadastrar cliente"
+            description="Informe os dados do cliente; o CPF será usado para vinculá-lo aos pacotes."
             onClose={onClose}
             size="wide"
         >
-            <form className="action-form package-form" onSubmit={createAdmin}>
+            <form className="action-form package-form" onSubmit={createClient}>
                 <div className="form-grid">
                     <div>
-                        <label htmlFor="admin-name">Nome completo</label>
-                        <input id="admin-name" name="name" autoFocus value={form.name} onChange={updateField} maxLength={255} required placeholder="Nome do administrador" />
+                        <label htmlFor="client-name">Nome completo</label>
+                        <input id="client-name" name="name" autoFocus value={form.name} onChange={updateField} maxLength={255} required placeholder="Nome do cliente" />
                     </div>
                     <div>
-                        <label htmlFor="admin-email">E-mail</label>
-                        <input id="admin-email" name="email" type="email" autoComplete="email" value={form.email} onChange={updateField} maxLength={255} required placeholder="admin@exemplo.com" />
+                        <label htmlFor="client-email">E-mail</label>
+                        <input id="client-email" name="email" type="email" autoComplete="email" value={form.email} onChange={updateField} maxLength={255} required placeholder="cliente@exemplo.com" />
+                    </div>
+                    <div>
+                        <label htmlFor="client-cpf">CPF</label>
+                        <input id="client-cpf" name="cpf" inputMode="numeric" pattern="[0-9]{11}" maxLength={11} value={form.cpf} onChange={updateField} required placeholder="11 dígitos, sem pontuação" />
+                    </div>
+                    <div>
+                        <label htmlFor="client-phone">Telefone</label>
+                        <input id="client-phone" name="telefone" type="tel" value={form.telefone} onChange={updateField} maxLength={30} required placeholder="Ex.: 11999999999" />
+                    </div>
+                    <CepField
+                        id="client-cep"
+                        cep={cepLookup.cep}
+                        cepError={cepLookup.cepError}
+                        lookingUpCep={cepLookup.lookingUpCep}
+                        onCepChange={cepLookup.updateCep}
+                        onLookup={cepLookup.lookupCep}
+                    />
+                    <div className="form-span">
+                        <label htmlFor="client-address">Endereço</label>
+                        <input id="client-address" name="endereco" value={form.endereco} onChange={updateField} maxLength={255} required placeholder="Confira o endereço e informe número/complemento" />
+                        <p className="form-hint">Confira o endereço preenchido e complete com número e complemento, se houver.</p>
                     </div>
                     <div className="form-span">
-                        <label htmlFor="admin-password">Senha de acesso</label>
-                        <input id="admin-password" name="password" type="password" autoComplete="new-password" value={form.password} onChange={updateField} minLength={8} required placeholder="Mínimo de 8 caracteres" />
+                        <label htmlFor="client-password">Senha de acesso</label>
+                        <input id="client-password" name="password" type="password" autoComplete="new-password" value={form.password} onChange={updateField} minLength={8} required placeholder="Mínimo de 8 caracteres" />
                     </div>
                 </div>
-                <p className="form-hint">O e-mail deve ser único. A senha será armazenada com hash.</p>
+                <p className="form-hint">O CPF deve ter 11 dígitos e ainda não estar cadastrado. A senha será armazenada com hash.</p>
                 {error && <p className="form-error" role="alert">{error}</p>}
                 <div className="modal-actions">
                     <button className="secondary-button" type="button" onClick={onClose}>Cancelar</button>
                     <button className="primary-button" type="submit" disabled={saving}>
-                        {saving ? 'Salvando...' : 'Cadastrar administrador'}
+                        {saving ? 'Salvando...' : 'Cadastrar cliente'}
                     </button>
                 </div>
             </form>
@@ -1151,7 +1158,7 @@ function CenterForm({ token, onClose, onCreated, onUnauthorized }) {
         setForm((current) => ({ ...current, endereco_centro }));
     }, []);
     const notifyError = useCallback((message) => reportError(setError, message), []);
-    const cepLookup = useCepLookup(setCenterAddress, notifyError);
+    const cepLookup = useCepLookup(setCenterAddress, notifyError, token, onUnauthorized);
 
     async function createCenter(event) {
         event.preventDefault();
@@ -1248,8 +1255,7 @@ function PackageForm({ token, onClose, onSaved, onUnauthorized, onCenterCreated 
         endereco_entrega: '',
         id_origem: '',
         id_entregador_responsavel: '',
-        cpf_destinatario: '',
-        telefone_destinatario: '',
+        cpf_cliente: '',
         data_prevista: defaultDate.toLocaleDateString('en-CA'),
     });
     const [centers, setCenters] = useState([]);
@@ -1262,7 +1268,7 @@ function PackageForm({ token, onClose, onSaved, onUnauthorized, onCenterCreated 
         setForm((current) => ({ ...current, endereco_entrega }));
     }, []);
     const notifyError = useCallback((message) => reportError(setError, message), []);
-    const cepLookup = useCepLookup(setPackageAddress, notifyError);
+    const cepLookup = useCepLookup(setPackageAddress, notifyError, token, onUnauthorized);
 
     useEffect(() => {
         let cancelled = false;
@@ -1388,12 +1394,8 @@ function PackageForm({ token, onClose, onSaved, onUnauthorized, onCenterCreated 
                             <input id="package-tracking" name="cod_rastreio" value={form.cod_rastreio} onChange={updateField} maxLength={255} required placeholder="Ex.: BR123456789" />
                         </div>
                         <div>
-                            <label htmlFor="package-cpf">CPF do destinatário</label>
-                            <input id="package-cpf" name="cpf_destinatario" value={form.cpf_destinatario} onChange={updateField} inputMode="numeric" pattern="[0-9]{11}" maxLength={11} required placeholder="11 dígitos, sem pontuação" />
-                        </div>
-                        <div>
-                            <label htmlFor="package-phone">Telefone do destinatário</label>
-                            <input id="package-phone" name="telefone_destinatario" type="tel" value={form.telefone_destinatario} onChange={updateField} maxLength={30} required placeholder="Ex.: 11999999999" />
+                            <label htmlFor="package-cpf">CPF do cliente</label>
+                            <input id="package-cpf" name="cpf_cliente" value={form.cpf_cliente} onChange={updateField} inputMode="numeric" pattern="[0-9]{11}" maxLength={11} required placeholder="11 dígitos, sem pontuação" />
                         </div>
                         <div>
                             <label htmlFor="package-recipient">Nome do destinatário</label>
@@ -1625,14 +1627,12 @@ function Dashboard({ user, token, onLogout }) {
                                     </div>
                                 </section>
                             </section>
-                            <ErrorBoundary>
-                                <RouteMap
-                                    deliveries={data.entregas_recentes ?? []}
-                                    packages={data.pacotes_mapa ?? []}
-                                    totalMappedPackages={data.pacotes_no_mapa ?? 0}
-                                    token={token}
-                                />
-                            </ErrorBoundary>
+                            <RouteMap
+                                deliveries={data.entregas_recentes ?? []}
+                                packages={data.pacotes_mapa ?? []}
+                                totalMappedPackages={data.pacotes_no_mapa ?? 0}
+                                token={token}
+                            />
                             <div id="entregas"><RecentDeliveries deliveries={data.entregas_recentes ?? []} /></div>
                         </>
                     ) : (
@@ -1658,17 +1658,17 @@ function Dashboard({ user, token, onLogout }) {
                     onCenterCreated={() => handleSaved('Centro logístico cadastrado com sucesso.')}
                 />
             )}
-            {activeModal === 'admin-create' && (
-                <AdminForm
+            {activeModal === 'client-create' && (
+                <ClientForm
                     token={token}
                     onClose={() => setActiveModal(null)}
                     onSaved={handleSaved}
                     onUnauthorized={handleUnauthorized}
                 />
             )}
-            {['package-list', 'center-list', 'admin-list'].includes(activeModal) && (
+            {['package-list', 'center-list', 'client-list'].includes(activeModal) && (
                 <DirectoryList
-                    type={activeModal === 'package-list' ? 'packages' : activeModal === 'center-list' ? 'centers' : 'admins'}
+                    type={activeModal === 'package-list' ? 'packages' : activeModal === 'center-list' ? 'centers' : 'clients'}
                     token={token}
                     onClose={() => setActiveModal(null)}
                     onUnauthorized={handleUnauthorized}
@@ -1700,33 +1700,6 @@ function Dashboard({ user, token, onLogout }) {
             )}
         </div>
     );
-}
-
-class ErrorBoundary extends React.Component {
-    constructor(props) {
-        super(props);
-        this.state = { error: null };
-    }
-
-    static getDerivedStateFromError(error) {
-        return { error };
-    }
-
-    componentDidCatch(error, info) {
-        console.error('Erro de renderização:', error, info.componentStack);
-    }
-
-    render() {
-        if (!this.state.error) return this.props.children;
-
-        return (
-            <div className="welcome-empty" role="alert">
-                <strong>Algo deu errado ao exibir esta tela</strong>
-                <span>{String(this.state.error?.message ?? this.state.error)}</span>
-                <button className="primary-button" onClick={() => window.location.reload()}>Recarregar</button>
-            </div>
-        );
-    }
 }
 
 function App() {
@@ -1820,4 +1793,4 @@ function App() {
     );
 }
 
-createRoot(document.getElementById('app')).render(<ErrorBoundary><App /></ErrorBoundary>);
+createRoot(document.getElementById('app')).render(<App />);

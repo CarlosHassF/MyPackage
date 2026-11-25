@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CentroLogisticoController;
+use App\Http\Controllers\Api\CepLookupController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\EntregadorController;
 use App\Http\Controllers\Api\PacoteController;
@@ -15,6 +16,8 @@ Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:6,
 Route::middleware('auth:sanctum')->group(function () {
     Route::post('/logout', [AuthController::class, 'logout']);
     Route::get('/dashboard', DashboardController::class);
+    Route::get('/cep/{cep}', CepLookupController::class)
+        ->middleware('throttle:60,1');
 
     Route::get('/user', function (Request $request) {
         return $request->user();
