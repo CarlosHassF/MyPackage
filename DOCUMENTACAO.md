@@ -77,10 +77,10 @@ automaticamente. Para sair do Tinker, use `exit`.
    chamadas autenticadas usando o cabeçalho `Authorization: Bearer <token>`.
 3. O dashboard consulta as métricas, as entregas recentes e os pacotes com
    coordenadas para exibição no mapa.
-4. O usuário cadastra centros logísticos, entregadores e pacotes. Um pacote
-   referencia o centro de origem, o cliente pelo CPF cadastrado em `users` e,
-   opcionalmente, um entregador disponível.
-5. Os formulários de cliente, centro e pacote consultam automaticamente o CEP
+4. O administrador cadastra centros logísticos, entregadores e pacotes. Um
+   pacote referencia o centro de origem, o administrador pelo CPF cadastrado em
+   `users` e, opcionalmente, um entregador disponível.
+5. Os formulários de administrador, centro e pacote consultam automaticamente o CEP
    informado pela API interna, que tenta ViaCEP, BrasilAPI e AwesomeAPI. Após
    localizar o CEP, o endereço base é preenchido; confira e complete número e
    complemento antes de salvar.
@@ -156,10 +156,11 @@ Uma entrega é considerada atrasada quando sua data prevista já passou e a
 situação ainda é `em separação`, `enviado` ou `em rota`. A lista do mapa inclui
 no máximo os 250 pacotes geolocalizados mais recentes.
 
-## Rotas de usuários/clientes
+## Rotas de administradores
 
-Usuários são clientes e também podem autenticar no painel. O CPF é único e é a
-chave usada pelos pacotes para referenciar o cliente.
+Os usuários cadastrados são administradores que podem autenticar no painel. O
+CPF é único e identifica o administrador associado ao pacote pelo campo
+`cpf_cliente` da API, mantido por compatibilidade.
 
 | Método | Rota | Funcionamento |
 | --- | --- | --- |
@@ -211,10 +212,10 @@ Situações possíveis: `entregue`, `enviado`, `em rota`, `devolvido` e
 
 | Método | Rota | Funcionamento |
 | --- | --- | --- |
-| `GET` | `/api/pacotes` | Lista pacotes paginados, incluindo relações com origem, cliente e entregador. |
+| `GET` | `/api/pacotes` | Lista pacotes paginados, incluindo relações com origem, administrador e entregador. |
 | `POST` | `/api/pacotes` | Cadastra pacote, geocodifica o endereço e retorna o registro criado com HTTP `201`. |
 | `GET` | `/api/pacotes/status` | Retorna a quantidade de pacotes em cada situação, inclusive as que têm quantidade zero. |
-| `GET` | `/api/pacotes/{pacote}` | Consulta pacote pelo ID e inclui origem, cliente e entregador. |
+| `GET` | `/api/pacotes/{pacote}` | Consulta pacote pelo ID e inclui origem, administrador e entregador. |
 | `PUT`, `PATCH` | `/api/pacotes/{pacote}` | Atualiza os campos enviados. Alterar o endereço de entrega atualiza as coordenadas por geocodificação. |
 | `DELETE` | `/api/pacotes/{pacote}` | Exclui pacote e sincroniza o status do entregador associado. |
 | `GET` | `/api/pacotes/{pacote}/rota` | Calcula rota entre o centro de origem e o endereço de entrega. Limitada a dez chamadas por minuto. |
@@ -227,7 +228,7 @@ Campos obrigatórios para criar pacote:
 | `nome_destinatario` | Texto. |
 | `endereco_entrega` | Texto localizável pelo provedor de mapas. |
 | `id_origem` | ID de um centro logístico cadastrado. |
-| `cpf_cliente` | CPF de 11 dígitos que já exista em `users.cpf`. Estar autenticado não substitui esse vínculo. |
+| `cpf_cliente` | CPF de 11 dígitos de um administrador cadastrado em `users.cpf`. O nome do campo é mantido por compatibilidade. |
 | `data_prevista` | Data no formato `YYYY-MM-DD`. |
 | `id_entregador_responsavel` | Opcional e anulável; se informado, deve ser um entregador disponível. |
 | `situacao` | Opcional na criação; deve corresponder a uma das situações listadas. |
@@ -254,7 +255,7 @@ Exemplo de criação:
 }
 ```
 
-O CPF do exemplo precisa corresponder a um usuário existente no banco. Ao
+O CPF do exemplo precisa corresponder ao CPF de um administrador existente no banco. Ao
 atribuir um entregador, a API verifica novamente sua disponibilidade dentro da
 transação para evitar atribuição simultânea incompatível.
 
@@ -267,17 +268,17 @@ transação para evitar atribuição simultânea incompatível.
   entregas recentes e mapa.
 - O atalho de pacote abre o formulário de criação. O formulário permite
   selecionar um centro, escolher entregador disponível ou deixar a atribuição
-  para depois, e informa o CPF do cliente.
+  para depois, e informa o CPF do administrador associado ao pacote.
 - O atalho de centros permite cadastrar centros logísticos; também é possível
   criar um centro durante o fluxo de pacote sem perder os dados preenchidos.
-- Os menus de pacotes, centros logísticos, clientes e entregadores permitem
+- Os menus de pacotes, centros logísticos, administradores e entregadores permitem
   cadastrar os registros compatíveis e abrir suas listagens paginadas.
-- O cadastro de cliente solicita nome, e-mail, senha, endereço, telefone e CPF.
-  Como clientes são registros da tabela `users`, e-mail e CPF devem ser únicos;
-  o CPF cadastrado pode então ser usado no formulário de pacote.
-- A listagem de pacotes mostra rastreamento, destinatário, cliente, centro de
+- O cadastro de administrador solicita nome, e-mail, senha, endereço, telefone
+  e CPF. Como administradores são registros da tabela `users`, e-mail e CPF
+  devem ser únicos; o CPF cadastrado pode então ser vinculado ao pacote.
+- A listagem de pacotes mostra rastreamento, destinatário, administrador, centro de
   origem, situação e previsão. As demais listagens mostram os dados principais
-  de centros, clientes e entregadores.
+  de centros, administradores e entregadores.
 - Encerrar sessão revoga o token atual na API.
 
 ## Estrutura principal do código
