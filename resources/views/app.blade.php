@@ -7,6 +7,7 @@
         <meta name="theme-color" content="#252d50">
         <meta name="description" content="Painel de controle de entregas e operações logísticas.">
         <title>Rota — Painel de entregas</title>
+        @viteReactRefresh
         @vite(['resources/js/app.jsx', 'resources/css/app.css'])
     </head>
     <body>

@@ -24,6 +24,25 @@ Para executar os testes:
 composer run test
 ```
 
+### Problemas de conexão e carregamento
+
+- Inicie o projeto com `composer run dev` e mantenha o terminal aberto. Acesse
+  o endereço do servidor Laravel iniciado pelo comando; a aplicação e a API
+  devem estar na mesma origem. Uma aba aberta numa porta antiga ou temporária
+  pode continuar visível, mas as chamadas à API falharão quando o servidor
+  daquela porta estiver parado.
+- Após reiniciar os serviços, atualize a página sem usar o cache (`Ctrl+Shift+R`
+  no Linux/Windows ou `Cmd+Shift+R` no macOS). Se a mensagem “Failed to fetch”
+  persistir, confira se o terminal ainda mostra os servidores ativos e se a
+  URL aberta corresponde à porta atual do Laravel.
+- A integração React/Vite precisa do preâmbulo `@viteReactRefresh` antes de
+  `@vite` no template Blade. Um erro de preâmbulo no console indica que os
+  assets não foram carregados corretamente; reinicie `composer run dev` ou
+  gere novamente os assets com `npm run build`.
+- “Failed to fetch” indica que o navegador não conseguiu alcançar o servidor.
+  Uma resposta HTTP `401` é diferente: significa que a API respondeu, mas a
+  sessão expirou ou o token não é válido; entre novamente pela tela de login.
+
 ### Criar o primeiro usuário
 
 As rotas de usuários também exigem autenticação. Portanto, crie o primeiro
@@ -61,14 +80,17 @@ automaticamente. Para sair do Tinker, use `exit`.
 4. O usuário cadastra centros logísticos, entregadores e pacotes. Um pacote
    referencia o centro de origem, o cliente pelo CPF cadastrado em `users` e,
    opcionalmente, um entregador disponível.
-5. Ao cadastrar um pacote, o endereço de entrega é geocodificado. As
+5. Os formulários de cliente, centro e pacote consultam automaticamente o CEP
+   informado nas APIs ViaCEP e BrasilAPI. Após localizar o CEP, o endereço base
+   é preenchido; confira e complete número e complemento antes de salvar.
+6. Ao cadastrar um pacote, o endereço de entrega é geocodificado. As
    coordenadas são salvas e o pacote pode aparecer no mapa. O endereço é
    enviado ao serviço externo Nominatim; geocodificações ficam em cache por
    30 dias e as consultas são limitadas a uma por segundo.
-6. Para calcular uma rota, o centro de origem precisa ter endereço. O sistema
+7. Para calcular uma rota, o centro de origem precisa ter endereço. O sistema
    geocodifica origem e destino e consulta o OSRM para obter distância, duração
    estimada e geometria da rota.
-7. Ao atribuir um pacote a um entregador disponível, seu status passa para
+8. Ao atribuir um pacote a um entregador disponível, seu status passa para
    `em rota`. Quando não há mais pacotes ativos associados, ele pode voltar
    automaticamente para `disponivel`.
 
@@ -76,6 +98,14 @@ O mapa usa OpenStreetMap, Nominatim e OSRM públicos, que não oferecem SLA e
 podem limitar ou indisponibilizar consultas. A duração da rota é estimada e não
 considera trânsito. As URLs podem ser substituídas por configuração de
 ambiente; `MAPS_CONTACT_EMAIL` adiciona um contato ao User-Agent do Nominatim.
+O CEP digitado é consultado automaticamente nas APIs ViaCEP e BrasilAPI após a
+entrada dos oito dígitos; também é possível iniciar a consulta pelo botão do
+formulário. A busca tem limite de oito segundos por serviço. Após localizar o
+CEP, o endereço base é preenchido automaticamente. Confira e complete número e
+complemento antes de salvar. Erros de validação, API e conexão aparecem em um
+popup global e junto ao formulário quando aplicável. CEP inválido ou não
+encontrado em nenhuma base impede o envio do cadastro. O popup fecha sozinho
+após alguns segundos ou pelo botão de fechar.
 
 ## Convenções da API
 
@@ -232,7 +262,14 @@ transação para evitar atribuição simultânea incompatível.
   para depois, e informa o CPF do cliente.
 - O atalho de centros permite cadastrar centros logísticos; também é possível
   criar um centro durante o fluxo de pacote sem perder os dados preenchidos.
-- O atalho de entregadores permite cadastrar e listar entregadores.
+- Os menus de pacotes, centros logísticos, clientes e entregadores permitem
+  cadastrar os registros compatíveis e abrir suas listagens paginadas.
+- O cadastro de cliente solicita nome, e-mail, senha, endereço, telefone e CPF.
+  Como clientes são registros da tabela `users`, e-mail e CPF devem ser únicos;
+  o CPF cadastrado pode então ser usado no formulário de pacote.
+- A listagem de pacotes mostra rastreamento, destinatário, cliente, centro de
+  origem, situação e previsão. As demais listagens mostram os dados principais
+  de centros, clientes e entregadores.
 - Encerrar sessão revoga o token atual na API.
 
 ## Estrutura principal do código

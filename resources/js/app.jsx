@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { CircleMarker, MapContainer, Polyline, Popup, TileLayer, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 
 const TOKEN_KEY = 'my-package-dashboard-token';
 const API_URL = import.meta.env.VITE_API_URL ?? '';
+const ERROR_EVENT = 'app:error';
 
 const statusNames = {
     'em separação': 'Em separação',
@@ -43,6 +44,7 @@ function Icon({ name, size = 20 }) {
         clock: <><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>,
         check: <><circle cx="12" cy="12" r="9" /><path d="m8 12 2.5 2.5L16 9" /></>,
         users: <><path d="M16 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="10" cy="7" r="4" /><path d="M20 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /></>,
+        user: <><path d="M20 21a8 8 0 0 0-16 0" /><circle cx="12" cy="8" r="4" /></>,
         search: <><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></>,
         bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></>,
         chevron: <path d="m9 18 6-6-6-6" />,
@@ -52,6 +54,228 @@ function Icon({ name, size = 20 }) {
     };
 
     return <svg {...shared}>{paths[name]}</svg>;
+}
+
+function reportError(setError, message) {
+    setError(message);
+    window.dispatchEvent(new CustomEvent(ERROR_EVENT, { detail: { message } }));
+}
+
+function getRequestErrorMessage(error, fallback) {
+    if (error instanceof TypeError) {
+        return 'Não foi possível conectar ao servidor. Verifique sua conexão e tente novamente.';
+    }
+
+    if (error instanceof SyntaxError) {
+        return 'O servidor retornou uma resposta inválida. Tente novamente.';
+    }
+
+    return error.message || fallback;
+}
+
+function ErrorPopup({ message, onClose }) {
+    if (!message) return null;
+
+    return (
+        <div className="error-popup" role="alert" aria-live="assertive">
+            <span className="error-popup-icon"><Icon name="close" size={16} /></span>
+            <span className="error-popup-message">{message}</span>
+            <button type="button" onClick={onClose} aria-label="Fechar mensagem de erro">
+                <Icon name="close" size={16} />
+            </button>
+        </div>
+    );
+}
+
+async function fetchCepData(url) {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 8000);
+
+    try {
+        const response = await fetch(url, {
+            headers: { Accept: 'application/json' },
+            signal: controller.signal,
+        });
+
+        if (response.status === 404) {
+            return null;
+        }
+
+        if (!response.ok) {
+            throw new Error('O serviço de consulta de CEP está indisponível.');
+        }
+
+        return await response.json();
+    } finally {
+        window.clearTimeout(timeoutId);
+    }
+}
+
+function getCepAddress(result, provider) {
+    if (!result || result.erro) {
+        return '';
+    }
+
+    const street = provider === 'viacep' ? result.logradouro : result.street;
+    const neighborhood = provider === 'viacep' ? result.bairro : result.neighborhood;
+    const city = provider === 'viacep' ? result.localidade : result.city;
+    const state = provider === 'viacep' ? result.uf : result.state;
+
+    return [
+        street,
+        neighborhood,
+        [city, state].filter(Boolean).join(' - '),
+    ].filter(Boolean).join(', ');
+}
+
+function useCepLookup(onAddressChange, onError) {
+    const [cep, setCep] = useState('');
+    const [cepError, setCepError] = useState('');
+    const [lookingUpCep, setLookingUpCep] = useState(false);
+    const validatedCep = useRef('');
+    const validatedAddress = useRef('');
+    const activeLookup = useRef(null);
+    const requestId = useRef(0);
+
+    const updateCep = useCallback((event) => {
+        const nextCep = event.target.value.replace(/\D/g, '').slice(0, 8);
+        requestId.current += 1;
+        validatedCep.current = '';
+        validatedAddress.current = '';
+        activeLookup.current = null;
+        setCep(nextCep);
+        setCepError('');
+        setLookingUpCep(false);
+        onAddressChange('');
+    }, [onAddressChange]);
+
+    const lookupCep = useCallback(async () => {
+        const digits = cep.replace(/\D/g, '');
+
+        if (!/^\d{8}$/.test(digits)) {
+            const message = 'Informe um CEP válido com 8 dígitos.';
+            setCepError(message);
+            onError(message);
+
+            return false;
+        }
+
+        if (validatedCep.current === digits) {
+            return validatedAddress.current;
+        }
+
+        if (activeLookup.current?.cep === digits) {
+            return activeLookup.current.promise;
+        }
+
+        const currentRequestId = ++requestId.current;
+        setLookingUpCep(true);
+        setCepError('');
+
+        const lookupPromise = (async () => {
+            try {
+                const results = await Promise.allSettled([
+                    fetchCepData(`https://viacep.com.br/ws/${digits}/json/`)
+                        .then((result) => getCepAddress(result, 'viacep')),
+                    fetchCepData(`https://brasilapi.com.br/api/cep/v1/${digits}`)
+                        .then((result) => getCepAddress(result, 'brasilapi')),
+                ]);
+                const address = results.find(
+                    (result) => result.status === 'fulfilled' && result.value,
+                )?.value ?? '';
+
+                if (!address) {
+                    const hasProviderResponse = results.some((result) => result.status === 'fulfilled');
+                    throw new Error(hasProviderResponse
+                        ? 'CEP não encontrado nas bases consultadas. Confira os números informados.'
+                        : 'Os serviços de CEP estão indisponíveis. Tente novamente em instantes.');
+                }
+
+                if (requestId.current === currentRequestId) {
+                    validatedCep.current = digits;
+                    validatedAddress.current = address;
+                    onAddressChange(address);
+                }
+
+                return requestId.current === currentRequestId ? address : false;
+            } catch (requestError) {
+                const message = requestError instanceof TypeError
+                    ? 'Não foi possível conectar ao serviço de CEP. Verifique sua internet e tente novamente.'
+                    : requestError.message || 'Não foi possível consultar o CEP. Tente novamente.';
+
+                if (requestId.current === currentRequestId) {
+                    setCepError(message);
+                    onError(message);
+                }
+
+                return false;
+            } finally {
+                if (requestId.current === currentRequestId) {
+                    setLookingUpCep(false);
+                }
+
+                if (activeLookup.current?.requestId === currentRequestId) {
+                    activeLookup.current = null;
+                }
+            }
+        })();
+
+        activeLookup.current = { cep: digits, promise: lookupPromise, requestId: currentRequestId };
+
+        return lookupPromise;
+    }, [cep, onAddressChange, onError]);
+
+    useEffect(() => {
+        if (!/^\d{8}$/.test(cep.replace(/\D/g, '')) || validatedCep.current === cep) {
+            return undefined;
+        }
+
+        const timeoutId = window.setTimeout(() => {
+            lookupCep();
+        }, 350);
+
+        return () => window.clearTimeout(timeoutId);
+    }, [cep, lookupCep]);
+
+    return { cep, cepError, lookingUpCep, lookupCep, updateCep };
+}
+
+function CepField({ id, label = 'CEP', cep, cepError, lookingUpCep, onCepChange, onLookup }) {
+    const formattedCep = cep.length > 5 ? `${cep.slice(0, 5)}-${cep.slice(5)}` : cep;
+
+    return (
+        <div className="cep-field form-span">
+            <label htmlFor={id}>{label}</label>
+            <div className="cep-input-row">
+                <input
+                    id={id}
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="postal-code"
+                    pattern="[0-9]{5}-?[0-9]{3}"
+                    maxLength={9}
+                    value={formattedCep}
+                    onChange={onCepChange}
+                    onBlur={() => {
+                        if (cep) onLookup();
+                    }}
+                    aria-invalid={Boolean(cepError)}
+                    aria-describedby={cepError ? `${id}-error` : `${id}-hint`}
+                    placeholder="00000-000"
+                    required
+                />
+                <button className="secondary-button" type="button" onClick={onLookup} disabled={lookingUpCep}>
+                    {lookingUpCep ? 'Consultando...' : 'Consultar CEP'}
+                </button>
+            </div>
+            <span className="form-hint" id={`${id}-hint`}>
+                {lookingUpCep
+                    ? 'Consultando o CEP e preenchendo o endereço...'
+                    : 'O endereço é preenchido automaticamente ao informar os 8 dígitos do CEP.'}
+            </span>
+            {cepError && <span className="cep-error" id={`${id}-error`}>{cepError}</span>}
+        </div>
+    );
 }
 
 function Login({ onLogin, busy, error }) {
@@ -126,6 +350,72 @@ function Brand() {
             <span className="brand-mark"><Icon name="package" size={21} /></span>
             <span>rota<span className="brand-dot">.</span></span>
         </a>
+    );
+}
+
+const navigationMenus = {
+    packages: {
+        label: 'Pacotes',
+        icon: 'package',
+        actions: [
+            { label: 'Listar pacotes', description: 'Consultar entregas cadastradas', icon: 'package', modal: 'package-list' },
+            { label: 'Cadastrar pacote', description: 'Adicionar uma nova entrega', icon: 'clock', modal: 'package' },
+        ],
+    },
+    centers: {
+        label: 'Centros logísticos',
+        icon: 'building',
+        actions: [
+            { label: 'Listar centros', description: 'Consultar centros cadastrados', icon: 'building', modal: 'center-list' },
+            { label: 'Cadastrar centro', description: 'Adicionar um centro logístico', icon: 'plus', modal: 'center-create' },
+        ],
+    },
+    clients: {
+        label: 'Clientes',
+        icon: 'user',
+        actions: [
+            { label: 'Listar clientes', description: 'Consultar clientes cadastrados', icon: 'users', modal: 'client-list' },
+            { label: 'Cadastrar cliente', description: 'Adicionar um novo cliente', icon: 'plus', modal: 'client-create' },
+        ],
+    },
+    couriers: {
+        label: 'Entregadores',
+        icon: 'users',
+        actions: [
+            { label: 'Listar entregadores', description: 'Ver equipe e disponibilidade', icon: 'users', modal: 'courier-list' },
+            { label: 'Cadastrar entregador', description: 'Adicionar alguém à equipe', icon: 'plus', modal: 'courier-create' },
+        ],
+    },
+};
+
+function ResourceNavMenu({ type, isOpen, onToggle, onSelect }) {
+    const menu = navigationMenus[type];
+
+    return (
+        <div className="resource-nav-group">
+            <button
+                className={`nav-item ${isOpen ? 'menu-open' : ''}`}
+                type="button"
+                data-tooltip={menu.label}
+                aria-label={menu.label}
+                aria-expanded={isOpen}
+                aria-haspopup="menu"
+                onClick={onToggle}
+            >
+                <Icon name={menu.icon} /><span className="nav-label">{menu.label}</span>
+            </button>
+            {isOpen && (
+                <div className="courier-menu" role="menu" aria-label={`Ações: ${menu.label}`}>
+                    <span className="courier-menu-heading">{menu.label.toUpperCase()}</span>
+                    {menu.actions.map((action) => (
+                        <button key={action.modal} role="menuitem" onClick={() => onSelect(action.modal)}>
+                            <span className="courier-menu-icon"><Icon name={action.icon} size={16} /></span>
+                            <span><strong>{action.label}</strong><small>{action.description}</small></span>
+                        </button>
+                    ))}
+                </div>
+            )}
+        </div>
     );
 }
 
@@ -284,7 +574,7 @@ function RouteMap({ deliveries, packages, totalMappedPackages, token }) {
 
             setRoute(result);
         } catch (routeError) {
-            setError(routeError.message || 'Falha ao conectar com o serviço de mapas.');
+            reportError(setError, getRequestErrorMessage(routeError, 'Falha ao conectar com o serviço de mapas.'));
         } finally {
             setLoading(false);
         }
@@ -442,7 +732,293 @@ function Modal({ title, description, onClose, children, size = 'normal' }) {
 }
 
 function getApiError(result, fallback) {
-    return Object.values(result.errors ?? {})[0]?.[0] ?? result.message ?? fallback;
+    const knownMessages = {
+        'validation.required': 'Este campo é obrigatório.',
+        'validation.exists': 'O registro informado não foi encontrado. Confira o CPF, centro ou entregador selecionado.',
+        'validation.unique': 'Este valor já está cadastrado.',
+        'validation.email': 'Informe um endereço de e-mail válido.',
+        'validation.digits': 'Informe a quantidade de dígitos exigida.',
+        'validation.min.string': 'O valor informado é menor que o mínimo permitido.',
+        'validation.min.numeric': 'O valor informado está abaixo do mínimo permitido.',
+        'validation.max.string': 'O valor informado excede o limite permitido.',
+        'validation.integer': 'Informe um número inteiro válido.',
+        'validation.date': 'Informe uma data válida.',
+        'validation.date_format': 'Informe uma data válida no formato AAAA-MM-DD.',
+        'validation.enum': 'O valor selecionado não é válido.',
+    };
+    const fieldLabels = {
+        name: 'Nome',
+        email: 'E-mail',
+        password: 'Senha',
+        endereco: 'Endereço',
+        telefone: 'Telefone',
+        cpf: 'CPF',
+        cpf_cliente: 'CPF do cliente',
+        endereco_entrega: 'Endereço de entrega',
+        endereco_centro: 'Endereço do centro',
+        id_origem: 'Centro logístico',
+        id_entregador_responsavel: 'Entregador',
+        cod_rastreio: 'Código de rastreio',
+        data_prevista: 'Data prevista',
+        nome_destinatario: 'Nome do destinatário',
+        nome_centro: 'Nome do centro',
+        responsavel_centro: 'Responsável pelo centro',
+        num_entregadores: 'Número de entregadores',
+        nome_entregador: 'Nome do entregador',
+        num_entregador: 'Número do entregador',
+        situacao: 'Situação',
+        status: 'Status',
+    };
+    const validationErrors = Object.entries(result.errors ?? {}).flatMap(([field, messages]) => (
+        messages.map((message) => `${fieldLabels[field] ?? field}: ${knownMessages[message] ?? message}`)
+    ));
+
+    return validationErrors.length
+        ? validationErrors.join(' ')
+        : result.message ?? fallback;
+}
+
+const directoryDefinitions = {
+    packages: {
+        title: 'Pacotes',
+        description: 'Consulte rastreamento, cliente, origem e situação das entregas.',
+        endpoint: 'pacotes',
+        emptyMessage: 'Cadastre um pacote para vê-lo nesta lista.',
+        columns: [
+            { label: 'Rastreamento', render: (item) => <span className="tracking-cell">{item.cod_rastreio}</span> },
+            { label: 'Destinatário', render: (item) => item.nome_destinatario },
+            { label: 'Cliente', render: (item) => item.cliente?.name ?? item.cpf_cliente },
+            { label: 'Origem', render: (item) => item.origem?.nome_centro ?? '—' },
+            {
+                label: 'Situação',
+                render: (item) => (
+                    <span className={`status-badge status-${item.situacao.replaceAll(' ', '-')}`}>
+                        <span />{statusNames[item.situacao] ?? item.situacao}
+                    </span>
+                ),
+            },
+            {
+                label: 'Previsão',
+                render: (item) => new Date(`${item.data_prevista}T12:00:00`).toLocaleDateString('pt-BR'),
+            },
+        ],
+    },
+    centers: {
+        title: 'Centros logísticos',
+        description: 'Consulte os centros de origem cadastrados na operação.',
+        endpoint: 'centros-logisticos',
+        emptyMessage: 'Cadastre um centro logístico para vê-lo nesta lista.',
+        columns: [
+            { label: 'Centro', render: (item) => item.nome_centro },
+            { label: 'Responsável', render: (item) => item.responsavel_centro },
+            { label: 'Endereço', render: (item) => item.endereco_centro || '—' },
+            { label: 'Entregadores informados', render: (item) => item.num_entregadores },
+        ],
+    },
+    clients: {
+        title: 'Clientes',
+        description: 'Consulte os clientes cadastrados para associar aos pacotes pelo CPF.',
+        endpoint: 'usuarios',
+        emptyMessage: 'Cadastre um cliente para vê-lo nesta lista.',
+        columns: [
+            { label: 'Cliente', render: (item) => item.name },
+            { label: 'E-mail', render: (item) => item.email },
+            { label: 'CPF', render: (item) => item.cpf },
+            { label: 'Telefone', render: (item) => item.telefone },
+        ],
+    },
+};
+
+function DirectoryList({ type, token, onClose, onUnauthorized }) {
+    const definition = directoryDefinitions[type];
+    const [page, setPage] = useState(1);
+    const [items, setItems] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState('');
+
+    const loadItems = useCallback(async () => {
+        setLoading(true);
+        setError('');
+
+        try {
+            const response = await fetch(`${API_URL}/api/${definition.endpoint}?page=${page}`, {
+                headers: { Accept: 'application/json', Authorization: 'Bearer ' + token },
+            });
+            const result = await response.json();
+
+            if (response.status === 401) {
+                onUnauthorized();
+                return;
+            }
+            if (!response.ok) throw new Error(getApiError(result, `Não foi possível carregar ${definition.title.toLowerCase()}.`));
+
+            setItems(result);
+        } catch (requestError) {
+            reportError(setError, getRequestErrorMessage(requestError, `Falha ao carregar ${definition.title.toLowerCase()}.`));
+        } finally {
+            setLoading(false);
+        }
+    }, [definition, page, token, onUnauthorized]);
+
+    useEffect(() => {
+        loadItems();
+    }, [loadItems]);
+
+    return (
+        <Modal title={definition.title} description={definition.description} onClose={onClose} size="directory">
+            <div className="directory-list">
+                {error && <p className="form-error" role="alert">{error}</p>}
+                {loading ? (
+                    <div className="list-loading">Carregando {definition.title.toLowerCase()}...</div>
+                ) : items?.data?.length ? (
+                    <>
+                        <div className="directory-table-wrap">
+                            <table>
+                                <thead>
+                                    <tr>{definition.columns.map((column) => <th key={column.label}>{column.label}</th>)}</tr>
+                                </thead>
+                                <tbody>
+                                    {items.data.map((item) => (
+                                        <tr key={item.id_pacote ?? item.id_centro_logistico ?? item.id}>
+                                            {definition.columns.map((column) => (
+                                                <td key={column.label}>{column.render(item)}</td>
+                                            ))}
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                        <div className="pagination">
+                            <span>{items.total} registros</span>
+                            <div>
+                                <button onClick={() => setPage((current) => current - 1)} disabled={!items.prev_page_url}>Anterior</button>
+                                <span>Página {items.current_page} de {items.last_page}</span>
+                                <button onClick={() => setPage((current) => current + 1)} disabled={!items.next_page_url}>Próxima</button>
+                            </div>
+                        </div>
+                    </>
+                ) : !error ? (
+                    <div className="empty-state">
+                        <span className="empty-icon"><Icon name={type === 'clients' ? 'user' : type === 'centers' ? 'building' : 'package'} size={22} /></span>
+                        <strong>Nenhum registro cadastrado</strong>
+                        <span>{definition.emptyMessage}</span>
+                    </div>
+                ) : null}
+            </div>
+        </Modal>
+    );
+}
+
+function ClientForm({ token, onClose, onSaved, onUnauthorized }) {
+    const [form, setForm] = useState({
+        name: '',
+        email: '',
+        password: '',
+        endereco: '',
+        telefone: '',
+        cpf: '',
+    });
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState('');
+    const setClientAddress = useCallback((endereco) => {
+        setForm((current) => ({ ...current, endereco }));
+    }, []);
+    const notifyError = useCallback((message) => reportError(setError, message), []);
+    const cepLookup = useCepLookup(setClientAddress, notifyError);
+
+    function updateField(event) {
+        setForm((current) => ({ ...current, [event.target.name]: event.target.value }));
+    }
+
+    async function createClient(event) {
+        event.preventDefault();
+        setSaving(true);
+        setError('');
+
+        try {
+            const cepAddress = await cepLookup.lookupCep();
+            if (!cepAddress) return;
+
+            const response = await fetch(`${API_URL}/api/usuarios`, {
+                method: 'POST',
+                headers: {
+                    Accept: 'application/json',
+                    'Content-Type': 'application/json',
+                    Authorization: 'Bearer ' + token,
+                },
+                body: JSON.stringify({ ...form, endereco: form.endereco || cepAddress }),
+            });
+            const result = await response.json();
+
+            if (response.status === 401) {
+                onUnauthorized();
+                return;
+            }
+            if (!response.ok) throw new Error(getApiError(result, 'Não foi possível cadastrar o cliente.'));
+
+            onSaved('Cliente cadastrado com sucesso.');
+            onClose();
+        } catch (requestError) {
+            reportError(setError, getRequestErrorMessage(requestError, 'Falha ao cadastrar o cliente.'));
+        } finally {
+            setSaving(false);
+        }
+    }
+
+    return (
+        <Modal
+            title="Cadastrar cliente"
+            description="Informe os dados do cliente; o CPF será usado para vinculá-lo aos pacotes."
+            onClose={onClose}
+            size="wide"
+        >
+            <form className="action-form package-form" onSubmit={createClient}>
+                <div className="form-grid">
+                    <div>
+                        <label htmlFor="client-name">Nome completo</label>
+                        <input id="client-name" name="name" autoFocus value={form.name} onChange={updateField} maxLength={255} required placeholder="Nome do cliente" />
+                    </div>
+                    <div>
+                        <label htmlFor="client-email">E-mail</label>
+                        <input id="client-email" name="email" type="email" autoComplete="email" value={form.email} onChange={updateField} maxLength={255} required placeholder="cliente@exemplo.com" />
+                    </div>
+                    <div>
+                        <label htmlFor="client-cpf">CPF</label>
+                        <input id="client-cpf" name="cpf" inputMode="numeric" pattern="[0-9]{11}" maxLength={11} value={form.cpf} onChange={updateField} required placeholder="11 dígitos, sem pontuação" />
+                    </div>
+                    <div>
+                        <label htmlFor="client-phone">Telefone</label>
+                        <input id="client-phone" name="telefone" type="tel" value={form.telefone} onChange={updateField} maxLength={30} required placeholder="Ex.: 11999999999" />
+                    </div>
+                    <CepField
+                        id="client-cep"
+                        cep={cepLookup.cep}
+                        cepError={cepLookup.cepError}
+                        lookingUpCep={cepLookup.lookingUpCep}
+                        onCepChange={cepLookup.updateCep}
+                        onLookup={cepLookup.lookupCep}
+                    />
+                    <div className="form-span">
+                        <label htmlFor="client-address">Endereço</label>
+                        <input id="client-address" name="endereco" value={form.endereco} onChange={updateField} maxLength={255} required placeholder="Confira o endereço e informe número/complemento" />
+                        <p className="form-hint">Confira o endereço preenchido e complete com número e complemento, se houver.</p>
+                    </div>
+                    <div className="form-span">
+                        <label htmlFor="client-password">Senha de acesso</label>
+                        <input id="client-password" name="password" type="password" autoComplete="new-password" value={form.password} onChange={updateField} minLength={8} required placeholder="Mínimo de 8 caracteres" />
+                    </div>
+                </div>
+                <p className="form-hint">O CPF deve ter 11 dígitos e ainda não estar cadastrado. A senha será armazenada com hash.</p>
+                {error && <p className="form-error" role="alert">{error}</p>}
+                <div className="modal-actions">
+                    <button className="secondary-button" type="button" onClick={onClose}>Cancelar</button>
+                    <button className="primary-button" type="submit" disabled={saving}>
+                        {saving ? 'Salvando...' : 'Cadastrar cliente'}
+                    </button>
+                </div>
+            </form>
+        </Modal>
+    );
 }
 
 function CourierManager({ token, mode, onClose, onSaved, onUnauthorized }) {
@@ -472,7 +1048,7 @@ function CourierManager({ token, mode, onClose, onSaved, onUnauthorized }) {
 
             setCouriers(result);
         } catch (requestError) {
-            setError(requestError.message || 'Falha ao carregar os entregadores.');
+            reportError(setError, getRequestErrorMessage(requestError, 'Falha ao carregar os entregadores.'));
         } finally {
             setLoadingList(false);
         }
@@ -508,7 +1084,7 @@ function CourierManager({ token, mode, onClose, onSaved, onUnauthorized }) {
             onSaved('Entregador cadastrado com sucesso.');
             onClose();
         } catch (requestError) {
-            setError(requestError.message || 'Falha ao cadastrar o entregador.');
+            reportError(setError, getRequestErrorMessage(requestError, 'Falha ao cadastrar o entregador.'));
         } finally {
             setSaving(false);
         }
@@ -612,6 +1188,11 @@ function CenterForm({ token, onClose, onCreated, onUnauthorized }) {
     });
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState('');
+    const setCenterAddress = useCallback((endereco_centro) => {
+        setForm((current) => ({ ...current, endereco_centro }));
+    }, []);
+    const notifyError = useCallback((message) => reportError(setError, message), []);
+    const cepLookup = useCepLookup(setCenterAddress, notifyError);
 
     async function createCenter(event) {
         event.preventDefault();
@@ -619,6 +1200,9 @@ function CenterForm({ token, onClose, onCreated, onUnauthorized }) {
         setError('');
 
         try {
+            const cepAddress = await cepLookup.lookupCep();
+            if (!cepAddress) return;
+
             const response = await fetch(`${API_URL}/api/centros-logisticos`, {
                 method: 'POST',
                 headers: {
@@ -626,7 +1210,11 @@ function CenterForm({ token, onClose, onCreated, onUnauthorized }) {
                     'Content-Type': 'application/json',
                     Authorization: 'Bearer ' + token,
                 },
-                body: JSON.stringify({ ...form, num_entregadores: Number(form.num_entregadores) }),
+                body: JSON.stringify({
+                    ...form,
+                    endereco_centro: form.endereco_centro || cepAddress,
+                    num_entregadores: Number(form.num_entregadores),
+                }),
             });
             const result = await response.json();
 
@@ -639,7 +1227,7 @@ function CenterForm({ token, onClose, onCreated, onUnauthorized }) {
             onCreated(result);
             onClose();
         } catch (requestError) {
-            setError(requestError.message || 'Falha ao cadastrar o centro logístico.');
+            reportError(setError, getRequestErrorMessage(requestError, 'Falha ao cadastrar o centro logístico.'));
         } finally {
             setSaving(false);
         }
@@ -661,8 +1249,19 @@ function CenterForm({ token, onClose, onCreated, onUnauthorized }) {
                     <input id="center-manager" name="responsavel_centro" value={form.responsavel_centro} onChange={updateField} maxLength={255} required placeholder="Nome do responsável" />
                 </div>
                 <div className="form-span">
+                    <CepField
+                        id="center-cep"
+                        cep={cepLookup.cep}
+                        cepError={cepLookup.cepError}
+                        lookingUpCep={cepLookup.lookingUpCep}
+                        onCepChange={cepLookup.updateCep}
+                        onLookup={cepLookup.lookupCep}
+                    />
+                </div>
+                <div className="form-span">
                     <label htmlFor="center-address">Endereço do centro logístico</label>
-                    <input id="center-address" name="endereco_centro" value={form.endereco_centro} onChange={updateField} maxLength={255} required placeholder="Rua, número, bairro, cidade e estado" />
+                    <input id="center-address" name="endereco_centro" value={form.endereco_centro} onChange={updateField} maxLength={255} required placeholder="Confira o endereço e informe número/complemento" />
+                    <p className="form-hint">Confira o endereço preenchido e complete com número e complemento, se houver.</p>
                 </div>
                 <div>
                     <label htmlFor="center-couriers">Número de entregadores</label>
@@ -699,6 +1298,11 @@ function PackageForm({ token, onClose, onSaved, onUnauthorized, onCenterCreated 
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState('');
     const [showCenterForm, setShowCenterForm] = useState(false);
+    const setPackageAddress = useCallback((endereco_entrega) => {
+        setForm((current) => ({ ...current, endereco_entrega }));
+    }, []);
+    const notifyError = useCallback((message) => reportError(setError, message), []);
+    const cepLookup = useCepLookup(setPackageAddress, notifyError);
 
     useEffect(() => {
         let cancelled = false;
@@ -730,7 +1334,9 @@ function PackageForm({ token, onClose, onSaved, onUnauthorized, onCenterCreated 
                     setCouriers(courierResult);
                 }
             } catch (requestError) {
-                if (!cancelled) setError(requestError.message || 'Falha ao carregar os dados para o pacote.');
+                if (!cancelled) {
+                    reportError(setError, getRequestErrorMessage(requestError, 'Falha ao carregar os dados para o pacote.'));
+                }
             } finally {
                 if (!cancelled) setLoadingOptions(false);
             }
@@ -745,15 +1351,19 @@ function PackageForm({ token, onClose, onSaved, onUnauthorized, onCenterCreated 
         setSaving(true);
         setError('');
 
-        const payload = {
-            ...form,
-            id_origem: Number(form.id_origem),
-            id_entregador_responsavel: form.id_entregador_responsavel
-                ? Number(form.id_entregador_responsavel)
-                : null,
-        };
-
         try {
+            const cepAddress = await cepLookup.lookupCep();
+            if (!cepAddress) return;
+
+            const payload = {
+                ...form,
+                endereco_entrega: form.endereco_entrega || cepAddress,
+                id_origem: Number(form.id_origem),
+                id_entregador_responsavel: form.id_entregador_responsavel
+                    ? Number(form.id_entregador_responsavel)
+                    : null,
+            };
+
             const response = await fetch(`${API_URL}/api/pacotes`, {
                 method: 'POST',
                 headers: {
@@ -774,7 +1384,7 @@ function PackageForm({ token, onClose, onSaved, onUnauthorized, onCenterCreated 
             onSaved('Pacote cadastrado com sucesso.');
             onClose();
         } catch (requestError) {
-            setError(requestError.message || 'Falha ao cadastrar o pacote.');
+            reportError(setError, getRequestErrorMessage(requestError, 'Falha ao cadastrar o pacote.'));
         } finally {
             setSaving(false);
         }
@@ -830,8 +1440,19 @@ function PackageForm({ token, onClose, onSaved, onUnauthorized, onCenterCreated 
                             <input id="package-date" type="date" name="data_prevista" value={form.data_prevista} onChange={updateField} required />
                         </div>
                         <div className="form-span">
+                            <CepField
+                                id="package-cep"
+                                cep={cepLookup.cep}
+                                cepError={cepLookup.cepError}
+                                lookingUpCep={cepLookup.lookingUpCep}
+                                onCepChange={cepLookup.updateCep}
+                                onLookup={cepLookup.lookupCep}
+                            />
+                        </div>
+                        <div className="form-span">
                             <label htmlFor="package-address">Endereço de entrega</label>
-                            <input id="package-address" name="endereco_entrega" value={form.endereco_entrega} onChange={updateField} maxLength={255} required placeholder="Rua, número, bairro, cidade e estado" />
+                            <input id="package-address" name="endereco_entrega" value={form.endereco_entrega} onChange={updateField} maxLength={255} required placeholder="Confira o endereço e informe número/complemento" />
+                            <p className="form-hint">Confira o endereço preenchido e complete com número e complemento para localizar a entrega.</p>
                         </div>
                         <div>
                             <div className="field-label-row">
@@ -880,7 +1501,7 @@ function Dashboard({ user, token, onLogout }) {
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(true);
     const [updatedAt, setUpdatedAt] = useState(null);
-    const [courierMenuOpen, setCourierMenuOpen] = useState(false);
+    const [openResourceMenu, setOpenResourceMenu] = useState(null);
     const [activeModal, setActiveModal] = useState(null);
     const [notice, setNotice] = useState('');
 
@@ -904,7 +1525,7 @@ function Dashboard({ user, token, onLogout }) {
             setData(result);
             setUpdatedAt(new Date(result.atualizado_em));
         } catch (requestError) {
-            setError(requestError.message || 'Falha ao conectar com a API.');
+            reportError(setError, getRequestErrorMessage(requestError, 'Falha ao conectar com a API.'));
         } finally {
             setLoading(false);
         }
@@ -943,66 +1564,22 @@ function Dashboard({ user, token, onLogout }) {
                         className="nav-item active"
                         href="#dashboard"
                         data-tooltip="Visão geral"
-                        onClick={() => setCourierMenuOpen(false)}
+                        onClick={() => setOpenResourceMenu(null)}
                     >
                         <Icon name="package" /><span className="nav-label">Visão geral</span>
                     </a>
-                    <button
-                        className="nav-item"
-                        type="button"
-                        data-tooltip="Cadastrar pacote"
-                        aria-label="Cadastrar pacote"
-                        onClick={() => {
-                            setCourierMenuOpen(false);
-                            setActiveModal('package');
-                        }}
-                    >
-                        <Icon name="clock" /><span className="nav-label">Cadastrar pacote</span>
-                    </button>
-                    <button
-                        className="nav-item"
-                        type="button"
-                        data-tooltip="Cadastrar centro logístico"
-                        aria-label="Cadastrar centro logístico"
-                        onClick={() => {
-                            setCourierMenuOpen(false);
-                            setActiveModal('center-create');
-                        }}
-                    >
-                        <Icon name="building" /><span className="nav-label">Cadastrar centro</span>
-                    </button>
-                    <div className="courier-nav-group">
-                        <button
-                            className={`nav-item ${courierMenuOpen ? 'menu-open' : ''}`}
-                            type="button"
-                            data-tooltip="Entregadores"
-                            aria-label="Entregadores"
-                            aria-expanded={courierMenuOpen}
-                            aria-haspopup="menu"
-                            onClick={() => setCourierMenuOpen((open) => !open)}
-                        >
-                            <Icon name="users" /><span className="nav-label">Entregadores</span>
-                        </button>
-                        {courierMenuOpen && (
-                            <div className="courier-menu" role="menu" aria-label="Ações de entregadores">
-                                <span className="courier-menu-heading">ENTREGADORES</span>
-                                <button role="menuitem" onClick={() => {
-                                    setCourierMenuOpen(false);
-                                    setActiveModal('courier-create');
-                                }}>
-                                    <span className="courier-menu-icon"><Icon name="plus" size={16} /></span>
-                                    <span><strong>Cadastrar entregador</strong><small>Adicionar alguém à equipe</small></span>
-                                </button>
-                                <button role="menuitem" onClick={() => {
-                                    setCourierMenuOpen(false);
-                                    setActiveModal('courier-list');
-                                }}>
-                                    <span className="courier-menu-icon"><Icon name="users" size={16} /></span>
-                                    <span><strong>Listar entregadores</strong><small>Ver equipe e disponibilidade</small></span>
-                                </button>
-                            </div>
-                        )}
-                    </div>
+                    {Object.keys(navigationMenus).map((type) => (
+                        <ResourceNavMenu
+                            key={type}
+                            type={type}
+                            isOpen={openResourceMenu === type}
+                            onToggle={() => setOpenResourceMenu((current) => current === type ? null : type)}
+                            onSelect={(modal) => {
+                                setOpenResourceMenu(null);
+                                setActiveModal(modal);
+                            }}
+                        />
+                    ))}
                 </nav>
                 <div className="sidebar-bottom">
                     <div className="support-card">
@@ -1115,6 +1692,22 @@ function Dashboard({ user, token, onLogout }) {
                     onCenterCreated={() => handleSaved('Centro logístico cadastrado com sucesso.')}
                 />
             )}
+            {activeModal === 'client-create' && (
+                <ClientForm
+                    token={token}
+                    onClose={() => setActiveModal(null)}
+                    onSaved={handleSaved}
+                    onUnauthorized={handleUnauthorized}
+                />
+            )}
+            {['package-list', 'center-list', 'client-list'].includes(activeModal) && (
+                <DirectoryList
+                    type={activeModal === 'package-list' ? 'packages' : activeModal === 'center-list' ? 'centers' : 'clients'}
+                    token={token}
+                    onClose={() => setActiveModal(null)}
+                    onUnauthorized={handleUnauthorized}
+                />
+            )}
             {activeModal === 'center-create' && (
                 <Modal
                     title="Cadastrar centro logístico"
@@ -1151,6 +1744,28 @@ function App() {
     });
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
+    const [popupError, setPopupError] = useState('');
+    const popupTimer = useRef(null);
+
+    useEffect(() => {
+        function showError(event) {
+            setPopupError(event.detail.message);
+            window.clearTimeout(popupTimer.current);
+            popupTimer.current = window.setTimeout(() => setPopupError(''), 7000);
+        }
+
+        window.addEventListener(ERROR_EVENT, showError);
+
+        return () => {
+            window.removeEventListener(ERROR_EVENT, showError);
+            window.clearTimeout(popupTimer.current);
+        };
+    }, []);
+
+    function closeErrorPopup() {
+        window.clearTimeout(popupTimer.current);
+        setPopupError('');
+    }
 
     async function login(email, password) {
         setBusy(true);
@@ -1165,7 +1780,7 @@ function App() {
             const result = await response.json();
 
             if (!response.ok) {
-                throw new Error(result.message || 'E-mail ou senha inválidos.');
+                throw new Error(getApiError(result, 'E-mail ou senha inválidos.'));
             }
 
             sessionStorage.setItem(TOKEN_KEY, result.token);
@@ -1173,7 +1788,7 @@ function App() {
             setToken(result.token);
             setUser(result.user);
         } catch (loginError) {
-            setError(loginError.message || 'Não foi possível acessar a API.');
+            reportError(setError, getRequestErrorMessage(loginError, 'Não foi possível acessar a API.'));
         } finally {
             setBusy(false);
         }
@@ -1188,6 +1803,8 @@ function App() {
                     method: 'POST',
                     headers: { Accept: 'application/json', Authorization: `Bearer ${currentToken}` },
                 });
+            } catch (logoutError) {
+                reportError(setError, getRequestErrorMessage(logoutError, 'Não foi possível encerrar a sessão no servidor.'));
             } finally {
                 sessionStorage.removeItem(TOKEN_KEY);
                 sessionStorage.removeItem('my-package-dashboard-user');
@@ -1200,9 +1817,14 @@ function App() {
         }
     }, []);
 
-    if (!token) return <Login onLogin={login} busy={busy} error={error} />;
-
-    return <Dashboard user={user} token={token} onLogout={logout} />;
+    return (
+        <>
+            <ErrorPopup message={popupError} onClose={closeErrorPopup} />
+            {!token
+                ? <Login onLogin={login} busy={busy} error={error} />
+                : <Dashboard user={user} token={token} onLogout={logout} />}
+        </>
+    );
 }
 
 createRoot(document.getElementById('app')).render(<App />);
