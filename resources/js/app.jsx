@@ -370,12 +370,12 @@ const navigationMenus = {
             { label: 'Cadastrar centro', description: 'Adicionar um centro logístico', icon: 'plus', modal: 'center-create' },
         ],
     },
-    clients: {
-        label: 'Clientes',
+    admins: {
+        label: 'Administradores',
         icon: 'user',
         actions: [
-            { label: 'Listar clientes', description: 'Consultar clientes cadastrados', icon: 'users', modal: 'client-list' },
-            { label: 'Cadastrar cliente', description: 'Adicionar um novo cliente', icon: 'plus', modal: 'client-create' },
+            { label: 'Listar administradores', description: 'Consultar administradores cadastrados', icon: 'users', modal: 'admin-list' },
+            { label: 'Cadastrar administrador', description: 'Dar acesso ao sistema a outra pessoa', icon: 'plus', modal: 'admin-create' },
         ],
     },
     couriers: {
@@ -734,7 +734,7 @@ function Modal({ title, description, onClose, children, size = 'normal' }) {
 function getApiError(result, fallback) {
     const knownMessages = {
         'validation.required': 'Este campo é obrigatório.',
-        'validation.exists': 'O registro informado não foi encontrado. Confira o CPF, centro ou entregador selecionado.',
+        'validation.exists': 'O registro informado não foi encontrado. Confira o centro ou entregador selecionado.',
         'validation.unique': 'Este valor já está cadastrado.',
         'validation.email': 'Informe um endereço de e-mail válido.',
         'validation.digits': 'Informe a quantidade de dígitos exigida.',
@@ -750,10 +750,8 @@ function getApiError(result, fallback) {
         name: 'Nome',
         email: 'E-mail',
         password: 'Senha',
-        endereco: 'Endereço',
-        telefone: 'Telefone',
-        cpf: 'CPF',
-        cpf_cliente: 'CPF do cliente',
+        cpf_destinatario: 'CPF do destinatário',
+        telefone_destinatario: 'Telefone do destinatário',
         endereco_entrega: 'Endereço de entrega',
         endereco_centro: 'Endereço do centro',
         id_origem: 'Centro logístico',
@@ -781,13 +779,12 @@ function getApiError(result, fallback) {
 const directoryDefinitions = {
     packages: {
         title: 'Pacotes',
-        description: 'Consulte rastreamento, cliente, origem e situação das entregas.',
+        description: 'Consulte rastreamento, origem e situação das entregas.',
         endpoint: 'pacotes',
         emptyMessage: 'Cadastre um pacote para vê-lo nesta lista.',
         columns: [
             { label: 'Rastreamento', render: (item) => <span className="tracking-cell">{item.cod_rastreio}</span> },
             { label: 'Destinatário', render: (item) => item.nome_destinatario },
-            { label: 'Cliente', render: (item) => item.cliente?.name ?? item.cpf_cliente },
             { label: 'Origem', render: (item) => item.origem?.nome_centro ?? '—' },
             {
                 label: 'Situação',
@@ -815,16 +812,14 @@ const directoryDefinitions = {
             { label: 'Entregadores informados', render: (item) => item.num_entregadores },
         ],
     },
-    clients: {
-        title: 'Clientes',
-        description: 'Consulte os clientes cadastrados para associar aos pacotes pelo CPF.',
+    admins: {
+        title: 'Administradores',
+        description: 'Consulte as pessoas que têm acesso de administrador ao sistema.',
         endpoint: 'usuarios',
-        emptyMessage: 'Cadastre um cliente para vê-lo nesta lista.',
+        emptyMessage: 'Cadastre um administrador para vê-lo nesta lista.',
         columns: [
-            { label: 'Cliente', render: (item) => item.name },
+            { label: 'Nome', render: (item) => item.name },
             { label: 'E-mail', render: (item) => item.email },
-            { label: 'CPF', render: (item) => item.cpf },
-            { label: 'Telefone', render: (item) => item.telefone },
         ],
     },
 };
@@ -899,7 +894,7 @@ function DirectoryList({ type, token, onClose, onUnauthorized }) {
                     </>
                 ) : !error ? (
                     <div className="empty-state">
-                        <span className="empty-icon"><Icon name={type === 'clients' ? 'user' : type === 'centers' ? 'building' : 'package'} size={22} /></span>
+                        <span className="empty-icon"><Icon name={type === 'admins' ? 'user' : type === 'centers' ? 'building' : 'package'} size={22} /></span>
                         <strong>Nenhum registro cadastrado</strong>
                         <span>{definition.emptyMessage}</span>
                     </div>
@@ -909,36 +904,21 @@ function DirectoryList({ type, token, onClose, onUnauthorized }) {
     );
 }
 
-function ClientForm({ token, onClose, onSaved, onUnauthorized }) {
-    const [form, setForm] = useState({
-        name: '',
-        email: '',
-        password: '',
-        endereco: '',
-        telefone: '',
-        cpf: '',
-    });
+function AdminForm({ token, onClose, onSaved, onUnauthorized }) {
+    const [form, setForm] = useState({ name: '', email: '', password: '' });
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState('');
-    const setClientAddress = useCallback((endereco) => {
-        setForm((current) => ({ ...current, endereco }));
-    }, []);
-    const notifyError = useCallback((message) => reportError(setError, message), []);
-    const cepLookup = useCepLookup(setClientAddress, notifyError);
 
     function updateField(event) {
         setForm((current) => ({ ...current, [event.target.name]: event.target.value }));
     }
 
-    async function createClient(event) {
+    async function createAdmin(event) {
         event.preventDefault();
         setSaving(true);
         setError('');
 
         try {
-            const cepAddress = await cepLookup.lookupCep();
-            if (!cepAddress) return;
-
             const response = await fetch(`${API_URL}/api/usuarios`, {
                 method: 'POST',
                 headers: {
@@ -946,7 +926,7 @@ function ClientForm({ token, onClose, onSaved, onUnauthorized }) {
                     'Content-Type': 'application/json',
                     Authorization: 'Bearer ' + token,
                 },
-                body: JSON.stringify({ ...form, endereco: form.endereco || cepAddress }),
+                body: JSON.stringify(form),
             });
             const result = await response.json();
 
@@ -954,12 +934,12 @@ function ClientForm({ token, onClose, onSaved, onUnauthorized }) {
                 onUnauthorized();
                 return;
             }
-            if (!response.ok) throw new Error(getApiError(result, 'Não foi possível cadastrar o cliente.'));
+            if (!response.ok) throw new Error(getApiError(result, 'Não foi possível cadastrar o administrador.'));
 
-            onSaved('Cliente cadastrado com sucesso.');
+            onSaved('Administrador cadastrado com sucesso.');
             onClose();
         } catch (requestError) {
-            reportError(setError, getRequestErrorMessage(requestError, 'Falha ao cadastrar o cliente.'));
+            reportError(setError, getRequestErrorMessage(requestError, 'Falha ao cadastrar o administrador.'));
         } finally {
             setSaving(false);
         }
@@ -967,53 +947,32 @@ function ClientForm({ token, onClose, onSaved, onUnauthorized }) {
 
     return (
         <Modal
-            title="Cadastrar cliente"
-            description="Informe os dados do cliente; o CPF será usado para vinculá-lo aos pacotes."
+            title="Cadastrar administrador"
+            description="A pessoa poderá entrar no sistema com o e-mail e a senha informados."
             onClose={onClose}
             size="wide"
         >
-            <form className="action-form package-form" onSubmit={createClient}>
+            <form className="action-form package-form" onSubmit={createAdmin}>
                 <div className="form-grid">
                     <div>
-                        <label htmlFor="client-name">Nome completo</label>
-                        <input id="client-name" name="name" autoFocus value={form.name} onChange={updateField} maxLength={255} required placeholder="Nome do cliente" />
+                        <label htmlFor="admin-name">Nome completo</label>
+                        <input id="admin-name" name="name" autoFocus value={form.name} onChange={updateField} maxLength={255} required placeholder="Nome do administrador" />
                     </div>
                     <div>
-                        <label htmlFor="client-email">E-mail</label>
-                        <input id="client-email" name="email" type="email" autoComplete="email" value={form.email} onChange={updateField} maxLength={255} required placeholder="cliente@exemplo.com" />
-                    </div>
-                    <div>
-                        <label htmlFor="client-cpf">CPF</label>
-                        <input id="client-cpf" name="cpf" inputMode="numeric" pattern="[0-9]{11}" maxLength={11} value={form.cpf} onChange={updateField} required placeholder="11 dígitos, sem pontuação" />
-                    </div>
-                    <div>
-                        <label htmlFor="client-phone">Telefone</label>
-                        <input id="client-phone" name="telefone" type="tel" value={form.telefone} onChange={updateField} maxLength={30} required placeholder="Ex.: 11999999999" />
-                    </div>
-                    <CepField
-                        id="client-cep"
-                        cep={cepLookup.cep}
-                        cepError={cepLookup.cepError}
-                        lookingUpCep={cepLookup.lookingUpCep}
-                        onCepChange={cepLookup.updateCep}
-                        onLookup={cepLookup.lookupCep}
-                    />
-                    <div className="form-span">
-                        <label htmlFor="client-address">Endereço</label>
-                        <input id="client-address" name="endereco" value={form.endereco} onChange={updateField} maxLength={255} required placeholder="Confira o endereço e informe número/complemento" />
-                        <p className="form-hint">Confira o endereço preenchido e complete com número e complemento, se houver.</p>
+                        <label htmlFor="admin-email">E-mail</label>
+                        <input id="admin-email" name="email" type="email" autoComplete="email" value={form.email} onChange={updateField} maxLength={255} required placeholder="admin@exemplo.com" />
                     </div>
                     <div className="form-span">
-                        <label htmlFor="client-password">Senha de acesso</label>
-                        <input id="client-password" name="password" type="password" autoComplete="new-password" value={form.password} onChange={updateField} minLength={8} required placeholder="Mínimo de 8 caracteres" />
+                        <label htmlFor="admin-password">Senha de acesso</label>
+                        <input id="admin-password" name="password" type="password" autoComplete="new-password" value={form.password} onChange={updateField} minLength={8} required placeholder="Mínimo de 8 caracteres" />
                     </div>
                 </div>
-                <p className="form-hint">O CPF deve ter 11 dígitos e ainda não estar cadastrado. A senha será armazenada com hash.</p>
+                <p className="form-hint">O e-mail deve ser único. A senha será armazenada com hash.</p>
                 {error && <p className="form-error" role="alert">{error}</p>}
                 <div className="modal-actions">
                     <button className="secondary-button" type="button" onClick={onClose}>Cancelar</button>
                     <button className="primary-button" type="submit" disabled={saving}>
-                        {saving ? 'Salvando...' : 'Cadastrar cliente'}
+                        {saving ? 'Salvando...' : 'Cadastrar administrador'}
                     </button>
                 </div>
             </form>
@@ -1289,7 +1248,8 @@ function PackageForm({ token, onClose, onSaved, onUnauthorized, onCenterCreated 
         endereco_entrega: '',
         id_origem: '',
         id_entregador_responsavel: '',
-        cpf_cliente: '',
+        cpf_destinatario: '',
+        telefone_destinatario: '',
         data_prevista: defaultDate.toLocaleDateString('en-CA'),
     });
     const [centers, setCenters] = useState([]);
@@ -1428,8 +1388,12 @@ function PackageForm({ token, onClose, onSaved, onUnauthorized, onCenterCreated 
                             <input id="package-tracking" name="cod_rastreio" value={form.cod_rastreio} onChange={updateField} maxLength={255} required placeholder="Ex.: BR123456789" />
                         </div>
                         <div>
-                            <label htmlFor="package-cpf">CPF do cliente</label>
-                            <input id="package-cpf" name="cpf_cliente" value={form.cpf_cliente} onChange={updateField} inputMode="numeric" pattern="[0-9]{11}" maxLength={11} required placeholder="11 dígitos, sem pontuação" />
+                            <label htmlFor="package-cpf">CPF do destinatário</label>
+                            <input id="package-cpf" name="cpf_destinatario" value={form.cpf_destinatario} onChange={updateField} inputMode="numeric" pattern="[0-9]{11}" maxLength={11} required placeholder="11 dígitos, sem pontuação" />
+                        </div>
+                        <div>
+                            <label htmlFor="package-phone">Telefone do destinatário</label>
+                            <input id="package-phone" name="telefone_destinatario" type="tel" value={form.telefone_destinatario} onChange={updateField} maxLength={30} required placeholder="Ex.: 11999999999" />
                         </div>
                         <div>
                             <label htmlFor="package-recipient">Nome do destinatário</label>
@@ -1661,12 +1625,14 @@ function Dashboard({ user, token, onLogout }) {
                                     </div>
                                 </section>
                             </section>
-                            <RouteMap
-                                deliveries={data.entregas_recentes ?? []}
-                                packages={data.pacotes_mapa ?? []}
-                                totalMappedPackages={data.pacotes_no_mapa ?? 0}
-                                token={token}
-                            />
+                            <ErrorBoundary>
+                                <RouteMap
+                                    deliveries={data.entregas_recentes ?? []}
+                                    packages={data.pacotes_mapa ?? []}
+                                    totalMappedPackages={data.pacotes_no_mapa ?? 0}
+                                    token={token}
+                                />
+                            </ErrorBoundary>
                             <div id="entregas"><RecentDeliveries deliveries={data.entregas_recentes ?? []} /></div>
                         </>
                     ) : (
@@ -1692,17 +1658,17 @@ function Dashboard({ user, token, onLogout }) {
                     onCenterCreated={() => handleSaved('Centro logístico cadastrado com sucesso.')}
                 />
             )}
-            {activeModal === 'client-create' && (
-                <ClientForm
+            {activeModal === 'admin-create' && (
+                <AdminForm
                     token={token}
                     onClose={() => setActiveModal(null)}
                     onSaved={handleSaved}
                     onUnauthorized={handleUnauthorized}
                 />
             )}
-            {['package-list', 'center-list', 'client-list'].includes(activeModal) && (
+            {['package-list', 'center-list', 'admin-list'].includes(activeModal) && (
                 <DirectoryList
-                    type={activeModal === 'package-list' ? 'packages' : activeModal === 'center-list' ? 'centers' : 'clients'}
+                    type={activeModal === 'package-list' ? 'packages' : activeModal === 'center-list' ? 'centers' : 'admins'}
                     token={token}
                     onClose={() => setActiveModal(null)}
                     onUnauthorized={handleUnauthorized}
@@ -1734,6 +1700,33 @@ function Dashboard({ user, token, onLogout }) {
             )}
         </div>
     );
+}
+
+class ErrorBoundary extends React.Component {
+    constructor(props) {
+        super(props);
+        this.state = { error: null };
+    }
+
+    static getDerivedStateFromError(error) {
+        return { error };
+    }
+
+    componentDidCatch(error, info) {
+        console.error('Erro de renderização:', error, info.componentStack);
+    }
+
+    render() {
+        if (!this.state.error) return this.props.children;
+
+        return (
+            <div className="welcome-empty" role="alert">
+                <strong>Algo deu errado ao exibir esta tela</strong>
+                <span>{String(this.state.error?.message ?? this.state.error)}</span>
+                <button className="primary-button" onClick={() => window.location.reload()}>Recarregar</button>
+            </div>
+        );
+    }
 }
 
 function App() {
@@ -1827,4 +1820,4 @@ function App() {
     );
 }
 
-createRoot(document.getElementById('app')).render(<App />);
+createRoot(document.getElementById('app')).render(<ErrorBoundary><App /></ErrorBoundary>);

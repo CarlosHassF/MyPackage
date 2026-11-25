@@ -31,6 +31,8 @@ return new class extends Migration
             $table->id('id_pacote');
             $table->string('cod_rastreio')->unique();
             $table->string('nome_destinatario');
+            $table->string('cpf_destinatario', 11);
+            $table->string('telefone_destinatario', 30);
             $table->string('endereco_entrega');
             $table->foreignId('id_origem')
                 ->constrained('centros_logisticos', 'id_centro_logistico')
@@ -41,11 +43,6 @@ return new class extends Migration
                 ->nullOnDelete();
             $table->enum('situacao', array_column(SituacaoPacote::cases(), 'value'))
                 ->default(SituacaoPacote::EmSeparacao->value);
-            $table->string('cpf_cliente', 11);
-            $table->foreign('cpf_cliente')
-                ->references('cpf')
-                ->on('users')
-                ->restrictOnDelete();
             $table->date('data_prevista');
             $table->timestamps();
         });

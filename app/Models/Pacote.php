@@ -17,11 +17,12 @@ class Pacote extends Model
     protected $fillable = [
         'cod_rastreio',
         'nome_destinatario',
+        'cpf_destinatario',
+        'telefone_destinatario',
         'endereco_entrega',
         'id_origem',
         'id_entregador_responsavel',
         'situacao',
-        'cpf_cliente',
         'data_prevista',
         'latitude',
         'longitude',
@@ -44,10 +45,5 @@ class Pacote extends Model
     public function entregadorResponsavel(): BelongsTo
     {
         return $this->belongsTo(Entregador::class, 'id_entregador_responsavel', 'id_entregador');
-    }
-
-    public function cliente(): BelongsTo
-    {
-        return $this->belongsTo(User::class, 'cpf_cliente', 'cpf');
     }
 }

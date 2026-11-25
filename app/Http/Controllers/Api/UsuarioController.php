@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\Pacote;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -22,9 +21,6 @@ class UsuarioController extends Controller
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'email', 'max:255', 'unique:users,email'],
             'password' => ['required', 'string', 'min:8'],
-            'endereco' => ['required', 'string', 'max:255'],
-            'telefone' => ['required', 'string', 'max:30'],
-            'cpf' => ['required', 'string', 'digits:11', 'unique:users,cpf'],
         ]);
 
         return response()->json(User::create($data), 201);
@@ -42,9 +38,6 @@ class UsuarioController extends Controller
             'name' => ['sometimes', 'required', 'string', 'max:255'],
             'email' => ['sometimes', 'required', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user)],
             'password' => ['sometimes', 'required', 'string', 'min:8'],
-            'endereco' => ['sometimes', 'required', 'string', 'max:255'],
-            'telefone' => ['sometimes', 'required', 'string', 'max:30'],
-            'cpf' => ['sometimes', 'required', 'string', 'digits:11', Rule::unique('users', 'cpf')->ignore($user)],
         ]);
 
         $user->update($data);
@@ -52,16 +45,17 @@ class UsuarioController extends Controller
         return response()->json($user->refresh());
     }
 
-    public function destroy(int $usuario): JsonResponse
+    public function destroy(Request $request, int $usuario): JsonResponse
     {
         $user = User::query()->findOrFail($usuario);
 
-        if (Pacote::query()->where('cpf_cliente', $user->cpf)->exists()) {
+        if ($request->user()->is($user)) {
             return response()->json([
-                'message' => 'Não é possível excluir um usuário que possui pacotes cadastrados.',
+                'message' => 'Você não pode excluir o seu próprio acesso.',
             ], 409);
         }
 
+        $user->tokens()->delete();
         $user->delete();
 
         return response()->json(null, 204);

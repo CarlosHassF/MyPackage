@@ -159,7 +159,8 @@ class PacoteController extends Controller
                 'exists:entregadores,id_entregador',
             ],
             'situacao' => ['sometimes', 'required', Rule::enum(SituacaoPacote::class)],
-            'cpf_cliente' => [$required, 'string', 'digits:11', 'exists:users,cpf'],
+            'cpf_destinatario' => [$required, 'string', 'digits:11'],
+            'telefone_destinatario' => [$required, 'string', 'max:30'],
             'data_prevista' => [$required, 'date_format:Y-m-d'],
         ];
     }
@@ -169,7 +170,6 @@ class PacoteController extends Controller
         return Pacote::query()->with([
             'origem:id_centro_logistico,nome_centro',
             'entregadorResponsavel:id_entregador,nome_entregador,num_entregador,status',
-            'cliente:id,name,email,cpf',
         ]);
     }
 
